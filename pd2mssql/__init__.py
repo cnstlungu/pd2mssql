@@ -1,54 +1,48 @@
-import tempfile
-import urllib.parse
-from sqlalchemy import create_engine
-import os
-
-_mapping = {'float64': 'decimal({},{})', \
-            'int64': 'bigint', \
-            'object': 'varchar({})', \
-            'datetime64[ns]': 'datetime2', \
-            'int32': 'int', \
-            'int16': 'smallintint', \
-            'bool': 'bit'
-            }
 """
-Dictionary containing mapping between Numpy(pandas) and SQL Server data types 
+This module uses SQL Server Bulk Insert to load data from Pandas DataFrames to SQL Server tables.
+
+
 """
 
-_reserved = ['(', ')', ' ']
-"""
-List containing allocated (reserved) symbols that cannot be used in column names.
-"""
+# MAPPING: Dictionary containing mapping between Numpy(pandas) and SQL Server data types
+MAPPING = {'float64': 'decimal({},{})', \
+           'int64': 'bigint', \
+           'object': 'varchar({})', \
+           'datetime64[ns]': 'datetime2', \
+           'int32': 'int', \
+           'int16': 'smallintint', \
+           'bool': 'bit'}
 
+# RESERVED: List containing allocated (reserved) symbols that cannot be used in column names.
+RESERVED = ['(', ')', ' ']
+
+# DIR: Directory that both current OS user and SQL Server user have access to materialize CSV
+# to be bulk inserted.
 DIR = 'C:\\Users\\MSSQLSERVER'
-"""
-Directory that both current OS user and SQL Server user have access to materialize CSV to be bulk inserted.
-"""
 
 
-class base_engine():
+class BaseEngine:
     """
     Wrapper object for the Engine to be used for the database connection.
-
     Takes server, database, user and password when creating an instance.
-
-
-
     """
 
     def __init__(self, server, database, user, password):
-        self.PARAMS = urllib.parse.quote(
-            "DRIVER={SQL Server Native Client 11.0};" + f"SERVER={server};DATABASE={database};UID={user};PWD={password}")
+        import urllib.parse
+        from sqlalchemy import create_engine
 
-        self.engine = create_engine(f"mssql+pyodbc:///?odbc_connect={self.PARAMS}")
+        self._params = urllib.parse.quote(
+            "DRIVER={SQL Server Native Client 11.0};" +
+            f"SERVER={server};DATABASE={database};UID={user};PWD={password}")
+
+        self.engine = create_engine(f"mssql+pyodbc:///?odbc_connect={self._params}")
 
 
-def build_command(df, name):
+def build_command(dataframe, name):
     """
     Auxiliary function. Builds SQL command with table definition for creation
 
-
-    :param df: pandas DataFrame to use as base for definition
+    :param dataframe: pandas DataFrame to use as base for definition
     :param name: name of the SQL Server table to created
     :return: string , containing command
     """
@@ -57,46 +51,46 @@ def build_command(df, name):
     scale = 4
     padding = 2
 
-    mapping = _mapping
+    mapping = MAPPING
 
     mapping['float64'] = mapping['float64'].format(precision, scale)
 
     string_columns = {}
 
-    for x in df.columns:
-        if str(df[x].dtype) == 'object':
-            string_columns[x] = min(max(df[x].map(len).max() * padding, 128), 4096)
-        if str(df[x].dtype) == 'bool':
-            df[x] = df[x].apply(lambda x: 1 if x else 0)
+    for column in dataframe.columns:
+        if str(dataframe[column].dtype) == 'object':
+            string_columns[column] = min(max(dataframe[column].map(len).max() * padding, 128), 4096)
+        if str(dataframe[column].dtype) == 'bool':
+            dataframe[column] = dataframe[column].apply(lambda x: 1 if x else 0)
 
     command = 'create table {} ('
 
-    for i, x in enumerate(df.columns):
+    for i, column in enumerate(dataframe.columns):
 
-        dtype = mapping[str(df[x].dtype)] if str(df[x].dtype) != 'object' else mapping[str(df[x].dtype)].format(
-            string_columns[x])
-        command += ''.join([i for i in x if i not in _reserved]) + ' ' + dtype
-        if i < len(df.columns) - 1:
+        dtype = mapping[str(dataframe[column].dtype)] if str(dataframe[column].dtype) != 'object' \
+            else mapping[str(dataframe[column].dtype)].format(string_columns[column])
+        command += ''.join([i for i in column if i not in RESERVED]) + ' ' + dtype
+        if i < len(dataframe.columns) - 1:
             command += ', '
-        if i == len(df.columns) - 1:
+        if i == len(dataframe.columns) - 1:
             command += ')'
     command = command.format(name)
 
     return command
 
 
-def create_table(df, name, engine, replace=False):
+def create_table(dataframe, name, engine, replace=False):
     """
     Creates a SQL Server table based on a pandas DataFrame, given a sqlalchemy SQL Server engine
 
-    :param df: pandas DataFrame to create table from
+    :param dataframe: pandas DataFrame to create table from
     :param name: name for the table to be created
     :param engine: (sqlalchemy/pyodbc) engine to use
     :param replace: replace or exception if table exists
     :return: void
     """
 
-    create = build_command(df, name)
+    create = build_command(dataframe, name)
     if not replace:
         if check_existence(name, engine):
             raise Exception('Table already exists')
@@ -123,41 +117,42 @@ def check_existence(name, engine):
 
     conn = engine.connect()
 
-    rs = conn.execute(f"SELECT object_id('{name}')")
+    result = conn.execute(f"SELECT object_id('{name}')")
 
-    for row in rs:
-        if row[0]:
-            return True
-        else:
-            return False
-
-
+    for row in result:
+        return bool(row[0])
 
 
 def is_empty(name, engine):
+    """
+    Checks if a given table is empty
+
+    :param name: Table name to check
+    :param engine: Engine to use for connection
+    :return: bool - True if empty, False is table has data
+    """
+
     conn = engine.connect()
 
-    rs = conn.execute(f"SELECT 1 from {name}")
+    result = conn.execute(f"SELECT 1 from {name}")
 
-    for row in rs:
-        if row[0]:
-            return False
-        else:
-            return True
+    for row in result:
+        return bool(row[0])
 
 
-
-
-def bulk_insert(df, name, engine, append=True):
+def bulk_insert(dataframe, name, engine, append=True):
     """
-    Uses the SQL Server bulk insert to load data from the CSV created by the pandas DataFrame to the SQL Server table
+    Uses the SQL Server bulk insert to load data from the CSV created by the pandas DataFrame
+    to the SQL Server table.
 
-    :param df: pandas DataFrame to be loaded to SQL Server
+    :param dataframe: pandas DataFrame to be loaded to SQL Server
     :param name: name of the SQL Server table to load the data to
     :param engine: engine to be used for the connection to the database
     :param append: append or exception if table has data
     :return: void
     """
+    from tempfile import NamedTemporaryFile
+    from os import remove
 
     if not check_existence(name, engine):
         raise Exception("Table does not exist!")
@@ -177,15 +172,15 @@ def bulk_insert(df, name, engine, append=True):
       );  
 
     """
-    with tempfile.NamedTemporaryFile(dir=DIR, delete=True) as temp:
+    with NamedTemporaryFile(dir=DIR, delete=True) as temp:
         try:
             temp.name = temp.name + '.csv'
 
             print(temp.name)
-            df.to_csv(temp.name, index=False)
+            dataframe.to_csv(temp.name, index=False)
             temp.close()
 
             with engine.begin() as conn:
                 conn.execute(command.format(name, temp.name))
         finally:
-            os.remove(temp.name)
+            remove(temp.name)
