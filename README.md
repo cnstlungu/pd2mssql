@@ -18,7 +18,9 @@ In a nutshell, pd2mssql exports the dataframe into a temporary file and bulk ins
 
 ## Requirements
 
-The account connecting to SQL Server should have the bulk permission on that particular server.
+Given the fact that the package is dependent on SQL Server Bulk insert, the following conditions have to be met:
+* The account connecting to SQL Server should have the bulk permission on that particular server.
+* The SQL Server instance/user have to have access to CSV destination
 
 See [requirements](https://github.com/cnstlungu/pd2mssql/blob/master/requirements.txt) for package requirements.
 
