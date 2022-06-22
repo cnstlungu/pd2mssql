@@ -1,4 +1,4 @@
-numpy==1.14.0
+numpy>=1.22
 pandas==0.22.0
 pyodbc==4.0.22
 python-dateutil==2.6.1
